@@ -79,27 +79,53 @@ function pl_legends(t) =
     [ [t, [0, 0], BASE_SIZE, pl_font(t)] ];
 
 // --- board -----------------------------------------------------------------
-// carve=true  -> keycaps with the legend recess
-// carve=false -> smooth keycaps (used to cut the legend plugs)
-module planck_board(carve=true) {
+// One keycap. carve=true -> legend recess carved; carve=false -> smooth.
+module pl_keycap(key_length, prof_row, column_value, carve, base, r, c) {
+  $legends = carve ? pl_legends(base) : [];
+  $front_legends = [];
+  key_profile(PROFILE, prof_row, column_value) u(key_length) cherry() {
+    $row = r;
+    $column = c;
+    if (key_length == 2) backspace() { key(); }   // 2u spacebar
+    else key();
+  }
+}
+
+// One flush legend plug = (smooth cap) INTERSECT (the exact cutter key() uses
+// to carve the pocket: legends($inset_legend_depth)). A single intersection,
+// so there is no coincident dished-top surface being differenced against
+// itself — which is what left sliver shards in the (smooth - recessed) version.
+module pl_plug(key_length, prof_row, column_value, base, r, c) {
+  key_profile(PROFILE, prof_row, column_value) u(key_length) {
+    $row = r;
+    $column = c;
+    $front_legends = [];
+    intersection() {
+      let($legends = [])
+        cherry() { if (key_length == 2) backspace() { key(); } else key(); }
+      let($legends = pl_legends(base))
+        legends($inset_legend_depth);
+    }
+  }
+}
+
+// part: "keys" -> recessed bodies;  "legends" -> flush plugs.
+module planck_board(part) {
   list = planck_default_layout;
   for (row = [0:len(list)-1]) {
     row_length = len(list[row]);
     for (column = [0:len(list[row])-1]) {
       key_length = list[row][column];
       if (key_length >= 1) {
-        column_value = double_sculpted_column(column, row_length, SCULPT);
-        column_distance = abs_sum([for (x = [0:column]) list[row][x]]);
+        cv = double_sculpted_column(column, row_length, SCULPT);
+        cd = abs_sum([for (x = [0:column]) list[row][x]]);
         base = planck_g20_legends[row][column];
-        translate_u(column_distance - key_length/2, -row) {
-          $legends = carve ? pl_legends(base) : [];
-          $front_legends = [];
-          key_profile(PROFILE, row + 1, column_value) u(key_length) cherry() {
-            $row = row;
-            $column = column;
-            if (key_length == 2) backspace() { key(); }   // 2u spacebar
-            else key();
-          }
+        translate_u(cd - key_length/2, -row) {
+          if (part == "keys")
+            pl_keycap(key_length, row + 1, cv, true, base, row, column);
+          else if (base != "")                       // skip blank keys / spacebar
+            color($tertiary_color)
+              pl_plug(key_length, row + 1, cv, base, row, column);
         }
       }
     }
@@ -108,10 +134,7 @@ module planck_board(carve=true) {
 
 // --- output ----------------------------------------------------------------
 if (EXPORT_PART == "keys" || EXPORT_PART == "both")
-  planck_board(true);
+  planck_board("keys");
 
 if (EXPORT_PART == "legends" || EXPORT_PART == "both")
-  color($tertiary_color) difference() {
-    planck_board(false);
-    planck_board(true);
-  }
+  planck_board("legends");
