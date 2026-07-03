@@ -3,29 +3,32 @@ include <includes.scad>
 /* Full keycap set for a Planck 40% (4x12 ortholinear, MIT bottom row with a 2u
    spacebar), G20 profile, with QWERTY lettering.
 
-   Built on the existing planck_default layout (src/layouts/planck/default.scad):
+   Built on the existing planck_default_layout (src/layouts/planck/default.scad):
    a 13-column grid with a center gap in rows 0-2 and, in the bottom row, a 2u
-   key in the center for the spacebar (rendered via the layout engine's 2u
-   special-key path). "se esiste usa quello" — we reuse that layout array.
+   key in the center for the spacebar. We render it with our own loop (not the
+   layout() engine) because the engine only places ONE default-size legend per
+   key, and we want per-key sizes plus stacked dual legends.
 
-   Legends: planck_default_legends in the source is 12 wide and does NOT account
-   for the center 0-gap column, so it misaligns after the gap. Here we use a
-   gap-aware 13-column array (blank "" at every gap and at the 2u spacebar).
+   Legends:
+   - single char (letters, symbols, arrows): centered, BASE_SIZE
+   - word legends (Esc, Ctl, Alt, Cmd, Lwr, Rse, Fn): centered, smaller WORD_SIZE
+   - punctuation keys get the ANSI shifted char STACKED ABOVE the base:
+       ;:   ,<   .>   /?      (base low, shifted high)
+   The center 0-gap columns and the 2u spacebar carry no legend.
 
-   Flush multimaterial legends (same idea as examples/g20_flush_multimaterial):
-   - EXPORT_PART = "keys"    -> keycap bodies with the 0.8mm legend recess (material 1)
-   - EXPORT_PART = "legends" -> flush legend plugs only               (material 2)
+   Flush multimaterial legends (0.8mm), same idea as examples/g20_flush_*:
+   - EXPORT_PART = "keys"    -> keycap bodies with the recess (material 1)
+   - EXPORT_PART = "legends" -> flush legend plugs only        (material 2)
    - EXPORT_PART = "both"    -> two-colour preview (NOT for slicing: OpenSCAD
                                unions it into one mesh; export the two parts
                                separately and combine them in the slicer).
-   The legend plugs are produced board-wide by  (smooth board) - (recessed board),
-   which cancels everything except the recess volumes = exactly the plugs.
+   The plugs are produced board-wide by (smooth board) - (recessed board).
 */
 
 EXPORT_PART = "keys";   // "keys" | "legends" | "both"
 
 // --- shared settings -------------------------------------------------------
-$stem_support_type = "disable";   // no tines (the cross-bars under the stem)
+$stem_support_type = "disable";   // no tines (cross-bars under the stem)
 $inset_legend_depth = 0.8;        // 0.8mm flush legend
 $outset_legends = false;
 
@@ -34,9 +37,21 @@ $secondary_color = [0.20, 0.55, 1.00];
 $tertiary_color  = [0.95, 0.95, 0.95];   // legends (second material)
 
 PROFILE = "g20";
-SCULPT  = "2hands";   // "2hands" | "1hand" | "cresting_wave"  (hand-split bowl)
+SCULPT  = "2hands";   // "2hands" | "1hand" | "cresting_wave"
 
-// --- gap-aware legends (13 columns, "" at gaps and on the 2u spacebar) ------
+// Hybrid legend fonts: a nice sans for text, DejaVu only for the keyboard
+// glyphs (⇥ ⌫ ⏎ ⇧) that most sans fonts lack. Arrows render fine everywhere.
+MAIN_FONT   = "Nimbus Sans";
+SYMBOL_FONT = "DejaVu Sans Mono:style=Book";
+function pl_font(t) = (t=="⇥"||t=="⌫"||t=="⏎"||t=="⇧") ? SYMBOL_FONT : MAIN_FONT;
+
+// legend sizes (mm) / stacking offset (normalized: 1 ~ top_height/3.5)
+BASE_SIZE = 5.5;   // single char
+WORD_SIZE = 3.5;   // Esc / Ctl / ...
+DUAL_SIZE = 4;     // each char of a stacked pair
+DUAL_DY   = 0.55;  // vertical offset of the stacked pair
+
+// --- gap-aware base legends (13 columns, "" at gaps and on the 2u spacebar) --
 planck_g20_legends = [
   ["⇥",  "Q",   "W",   "E",   "R",   "T", "", "Y",   "U", "I", "O", "P", "⌫"],
   ["Esc","A",   "S",   "D",   "F",   "G", "", "H",   "J", "K", "L", ";", "⏎"],
@@ -44,22 +59,59 @@ planck_g20_legends = [
   ["Fn", "Ctl", "Alt", "Cmd", "Lwr", "",  "", "",    "Rse","←", "↓", "↑", "→"]
 ];
 
-// recessed board (bodies with the legend pocket carved in)
-module planck_recessed()
-  layout(planck_default_layout, PROFILE, legends=planck_g20_legends,
-         row_sculpting_offset=1, column_sculpt_profile=SCULPT);
+// ANSI shifted partner for the punctuation keys ("" = no dual legend)
+function pl_shift(t) = t == ";" ? ":" :
+                       t == "," ? "<" :
+                       t == "." ? ">" :
+                       t == "/" ? "?" : "";
 
-// smooth board (identical, no legends) — used to cut the plugs
-module planck_smooth()
-  layout(planck_default_layout, PROFILE,
-         row_sculpting_offset=1, column_sculpt_profile=SCULPT);
+function pl_is_word(t) = t=="Esc"||t=="Ctl"||t=="Alt"||t=="Cmd"||
+                         t=="Lwr"||t=="Rse"||t=="Fn";
+
+// build the $legends array ([text, position, size, font]) for one base char
+function pl_legends(t) =
+  t == "" ? [] :
+  pl_shift(t) != "" ?
+    [ [t,           [0,  DUAL_DY], DUAL_SIZE, pl_font(t)],            // base low
+      [pl_shift(t), [0, -DUAL_DY], DUAL_SIZE, pl_font(pl_shift(t))] ] :  // shift high
+  pl_is_word(t) ?
+    [ [t, [0, 0], WORD_SIZE, pl_font(t)] ] :
+    [ [t, [0, 0], BASE_SIZE, pl_font(t)] ];
+
+// --- board -----------------------------------------------------------------
+// carve=true  -> keycaps with the legend recess
+// carve=false -> smooth keycaps (used to cut the legend plugs)
+module planck_board(carve=true) {
+  list = planck_default_layout;
+  for (row = [0:len(list)-1]) {
+    row_length = len(list[row]);
+    for (column = [0:len(list[row])-1]) {
+      key_length = list[row][column];
+      if (key_length >= 1) {
+        column_value = double_sculpted_column(column, row_length, SCULPT);
+        column_distance = abs_sum([for (x = [0:column]) list[row][x]]);
+        base = planck_g20_legends[row][column];
+        translate_u(column_distance - key_length/2, -row) {
+          $legends = carve ? pl_legends(base) : [];
+          $front_legends = [];
+          key_profile(PROFILE, row + 1, column_value) u(key_length) cherry() {
+            $row = row;
+            $column = column;
+            if (key_length == 2) backspace() { key(); }   // 2u spacebar
+            else key();
+          }
+        }
+      }
+    }
+  }
+}
 
 // --- output ----------------------------------------------------------------
 if (EXPORT_PART == "keys" || EXPORT_PART == "both")
-  planck_recessed();
+  planck_board(true);
 
 if (EXPORT_PART == "legends" || EXPORT_PART == "both")
   color($tertiary_color) difference() {
-    planck_smooth();
-    planck_recessed();
+    planck_board(false);
+    planck_board(true);
   }
