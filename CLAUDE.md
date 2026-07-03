@@ -93,6 +93,81 @@ Notes:
 - `gulpfile.js` provides `gulp compile` to auto-render changed root `*.scad` files (needs `yarn install`); optional, not required.
 - `models.rb` / `openscad.rb` batch-render individual keycaps across profiles/rows/sizes into `./models/`.
 
+## Headless rendering & PNG previews (this container)
+
+OpenSCAD 2021.01 is installed at `/usr/bin/openscad`. Generating a **PNG preview**
+needs an OpenGL context, which this headless box lacks — a bare
+`openscad --preview -o out.png ...` dies with `Can't create OpenGL OffscreenView`.
+Wrap it in a virtual framebuffer (`xvfb-run` is available):
+
+```bash
+xvfb-run -a -s "-screen 0 1400x800x24" openscad --preview \
+  --imgsize=1400,800 --colorscheme=Cornfield --projection=o \
+  --camera=<tx>,<ty>,<tz>,<rx>,<ry>,<rz>,<dist> \
+  -o out.png file.scad
+```
+
+Camera / framing gotchas learned the hard way:
+- `--camera=tx,ty,tz,rx,ry,rz,dist` is the **gimbal** form (look-at point + euler
+  angles + distance). `rx=0` looks straight **down** (top view); `rx≈90` is a side
+  elevation; `rx≈55` gives a 3/4 view.
+- `--viewall` does **not** frame things well here (it leaves the model tiny), so set
+  an explicit `dist` and point the look-at `tx,ty` at the model centre yourself.
+  A single 1u keycap is ~18mm; the whole Planck row is ~230mm — pick `dist` to match.
+- `--projection=o` = orthographic (clean flat-on shots), `p` = perspective (nicer 3/4).
+- STL export (`-o out.stl`) needs **no** GL and no Xvfb; only PNG preview does.
+
+## `use` vs `include` — the special-variable propagation bug (READ THIS)
+
+This bit us hard and is the single most important gotcha in this repo on the
+installed OpenSCAD (2021.01).
+
+**Symptom:** every profile produced the *same* keycap and `legend()` drew nothing.
+Measuring exported STL heights, `dcs_row(3)`, `sa_row(3)`, `g20_row(3)` all came out
+identical (~12mm) instead of their real heights, and legended keys had smooth tops.
+
+**Root cause:** KeyV2 profile/modifier functions (`g20_row`, `legend`, …) work by
+setting special (`$`) variables that `key()` reads. On OpenSCAD 2021.01 a module
+imported with **`use`** does **not** see `$` variables set by the caller (they'd have
+to be passed as parameters); only **`include`** propagates them. The stock
+`includes.scad` did `use <src/key.scad>`, so none of the profile/legend settings
+reached `key()` — everything collapsed to `settings.scad` defaults. This is a
+documented, version-sensitive behaviour: OpenSCAD [#3881] and [#5924] (it changed
+between 2021.01 and recent nightlies), and KeyV2 [#213]. A newer OpenSCAD *dev
+snapshot* (which the README recommends) behaves differently.
+
+**Fix applied here:** `includes.scad` now `include`s `src/key.scad` instead of
+`use`-ing it, with `$using_customizer = true` to suppress key.scad's auto
+`example_key()`. After this, profiles differentiate correctly (SA ~12.5, OEM ~9.5,
+DSA ~8.1, G20 ~7.1, DCS ~6.8 mm) and `legend()` / `front_legend()` work normally —
+no `keytext()` workarounds needed. If you ever see all-identical keys or missing
+legends again, check that this `include` is intact.
+
+[#3881]: https://github.com/openscad/openscad/issues/3881
+[#5924]: https://github.com/openscad/openscad/issues/5924
+[#213]:  https://github.com/rsheldiii/KeyV2/issues/213
+
+## Legend / text notes
+
+- `legend(text, position=[0,0], size, font)` and `front_legend(...)` set the legend
+  via the `$legends` / `$front_legends` special variables; `$inset_legend_depth`
+  (default 0.2) is how deep an inset legend is cut, `$outset_legends=true` raises it
+  instead. Chain the modifier before `key()`: `legend("Q") g20_row(3) key();`.
+- **Multimaterial / separate-body legends** (e.g. flush legends in a second colour):
+  render the two aligned bodies under the same `legend()`+profile —
+  `key(true)` (body with the pocket) and `dished(){ legends($inset_legend_depth); }`
+  (the plug that fills it). Export each with `-D 'EXPORT_PART="keys"'` /
+  `"legends"`. See `examples/g20_flush_multimaterial_legend.scad`.
+- **Fonts** are fine — `DejaVu Sans Mono:style=Book` is installed (`fc-list` for the
+  rest).
+- **Colours**: `key()` / `keytext()` wrap output in `color($primary_color)` /
+  `color($secondary_color)` / `color($tertiary_color)`. Those inner `color()` calls
+  override any outer `color(...)`, so recolour by setting the `$*_color` variables.
+- **Flush geometry z-fights in the optical preview** (a legend exactly level with the
+  surface can look faint/patchy on screen) — the STL is still correct. Keep legends
+  flush for slicing; only nudge them ~0.1mm proud if you specifically need a clean
+  screenshot.
+
 ## Customizer
 
 `customizer.scad` is a large **auto-generated** single-file bundle for the OpenSCAD/Thingiverse
