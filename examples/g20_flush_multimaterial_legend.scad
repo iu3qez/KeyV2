@@ -30,6 +30,13 @@ EXPORT_PART = "both";
 $inset_legend_depth = 0.8;
 $outset_legends = false;
 
+// Underside: drop the "tines" stem supports — the thin cross-bars radiating from
+// the stem read as artifacts under the cap and aren't wanted here.
+// ($support_type is left at its "flared" default. Note it produces nothing on a
+//  low profile like G20: the flare height is $total_depth - $stem_throw, which is
+//  ~0 here, so there's no vertical room for a flare to form. See src/key.scad:99.)
+$stem_support_type = "disable";
+
 // preview colours (each printed body is one material). key()/keytext() colour
 // themselves via these special variables, so set them rather than wrapping color().
 $primary_color   = [0.20, 0.55, 1.00];   // keycap body walls
